@@ -333,7 +333,7 @@ def build_ballmapper_plot(
     color_values = [G.nodes[n][color_metric] for n in G.nodes]
     colorscale = "Viridis" if "cost" not in color_metric else "Inferno"
     title = color_metric.replace("_", " ").title()
-    pos = nx.spring_layout(G, seed=42)
+    pos = compute_interactive_layout(G)
     edge_x, edge_y = [], []
     for edge in G.edges():
         x0, y0 = pos[edge[0]]
@@ -343,7 +343,7 @@ def build_ballmapper_plot(
     edge_trace = go.Scatter(
         x=edge_x,
         y=edge_y,
-        line=dict(width=1, color="#BBBBBB"),
+        line=dict(width=1, color="rgba(255,255,255,0.4)"),
         hoverinfo="none",
         mode="lines",
     )
@@ -351,20 +351,31 @@ def build_ballmapper_plot(
     node_y = [pos[n][1] for n in G.nodes()]
     counts = [G.nodes[n]["size"] for n in G.nodes()]
     if counts:
-        min_count, max_count = min(counts), max(counts)
-        min_px, max_px = 30, 150
-        if min_count == max_count:
+        sizes = np.sqrt(np.array(counts, dtype=float))
+        min_px, max_px = 30, 120
+        if float(sizes.max()) == float(sizes.min()):
             node_sizes = [((min_px + max_px) / 2) for _ in counts]
         else:
-            node_sizes = list(np.interp(counts, [min_count, max_count], [min_px, max_px]))
+            node_sizes = list(np.interp(sizes, [float(sizes.min()), float(sizes.max())], [min_px, max_px]))
     else:
         node_sizes = []
+    hovertext = []
+    for n in G.nodes():
+        details = [
+            f"Label: {G.nodes[n]['label']}",
+            f"Region: {G.nodes[n].get('region_name', '—')}",
+            f"Age band: {G.nodes[n].get('age_band', '—')}",
+            f"Gender: {G.nodes[n].get('gender_label', '—')}",
+            f"Size: {int(G.nodes[n]['size'])}",
+            f"Cost per patient: £{G.nodes[n].get('cost_per_patient', 0):.2f}",
+            f"Items per patient: {G.nodes[n].get('items_per_patient', 0):.2f}",
+            f"Obesity rate: {G.nodes[n].get('obesity_rate', 0):.2f}",
+        ]
+        hovertext.append("<br>".join(details))
     node_trace = go.Scatter(
         x=node_x,
         y=node_y,
-        mode="markers+text",
-        text=[G.nodes[n]["label"] for n in G.nodes()],
-        textposition="bottom center",
+        mode="markers",
         marker=dict(
             size=node_sizes,
             color=color_values,
@@ -374,26 +385,37 @@ def build_ballmapper_plot(
             line=dict(color="#333333", width=1),
         ),
         hoverinfo="text",
-        hovertext=[
-            f"{G.nodes[n]['label']}<br>size={G.nodes[n]['size']}<br>"
-            + "<br>".join(
-                f"{col.replace('_', ' ')}={G.nodes[n][col]:.2f}"
-                for col in ["obesity_rate", "cost_per_patient", "items_per_patient"]
-                if col in G.nodes[n]
-            )
-            for n in G.nodes()
-        ],
+        hovertext=hovertext,
     )
     fig = go.Figure(data=[edge_trace, node_trace])
     fig.update_layout(
         title=f"Ball Mapper graph (ε={epsilon:.2f}, color={title})",
         showlegend=False,
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        xaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.08)", zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.08)", zeroline=False, showticklabels=False),
         height=720,
         margin=dict(l=20, r=20, t=80, b=20),
+        paper_bgcolor="rgba(15,15,15,1)",
+        plot_bgcolor="rgba(15,15,15,1)",
+        font=dict(color="#f4f4f4"),
     )
     return fig, node_df
+
+
+def summarize_topology(node_df: pd.DataFrame, color_metric: str) -> str:
+    if node_df.empty or color_metric not in node_df.columns:
+        return "No nodes to summarise."
+    largest = node_df.sort_values("size", ascending=False).iloc[0]
+    hottest = node_df.sort_values(color_metric, ascending=False).iloc[0]
+    coolest = node_df.sort_values(color_metric, ascending=True).iloc[0]
+    largest_label = largest.get("region", largest.get("node_id"))
+    hottest_label = hottest.get("region", hottest.get("node_id"))
+    coolest_label = coolest.get("region", coolest.get("node_id"))
+    return (
+        f"Largest ball: **{largest_label}** (covers {int(largest['size'])} records). "
+        f"Highest {color_metric}: **{hottest_label}** ({hottest[color_metric]:.2f}). "
+        f"Lowest {color_metric}: **{coolest_label}** ({coolest[color_metric]:.2f})."
+    )
 
 
 
@@ -516,6 +538,7 @@ def main() -> None:
         if st.button("Generate Ball Mapper graph", key="generate_ballmapper"):
             fig, node_df = build_ballmapper_plot(epsilon, color_choice, current_feature_cfg["features"])
             st.plotly_chart(fig, use_container_width=True)
+            st.info(summarize_topology(node_df, color_choice))
             st.subheader("Node summary")
             st.dataframe(node_df)
             with st.expander("Topology notes", expanded=True):
@@ -533,6 +556,20 @@ def main() -> None:
 
     with tabs[3]:
         render_presets_tab(numeric_options, regions)
+
+
+def compute_interactive_layout(G: nx.Graph) -> dict[int, tuple[float, float]]:
+    if len(G) == 0:
+        return {}
+    counts = [G.nodes[n]["size"] for n in G.nodes]
+    avg = np.mean(counts) if counts else 1.0
+    max_count = max(counts) if counts else 1.0
+    base_k = 1 / np.sqrt(len(G))
+    k = base_k * (1 + avg / max_count)
+    try:
+        return nx.spring_layout(G, seed=42, k=k, weight=None)
+    except Exception:
+        return nx.spectral_layout(G)
 
 
 if __name__ == "__main__":

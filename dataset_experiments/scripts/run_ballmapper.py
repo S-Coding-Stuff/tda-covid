@@ -8,6 +8,7 @@ from typing import Sequence
 
 import matplotlib.pyplot as plt
 import networkx as nx
+import numpy as np
 import pandas as pd
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -44,12 +45,32 @@ def save_graph_json(node_df: pd.DataFrame, path: Path) -> None:
     path.write_text(json.dumps(payload, indent=2))
 
 
-def plot_graph(G: nx.Graph, metric: str, output_path: Path, title: str) -> None:
-    pos = nx.spring_layout(G, seed=42)
-    colors = [G.nodes[n][metric] for n in G.nodes]
-    sizes = [G.nodes[n]["size"] * 150 for n in G.nodes]
+def compute_layout(G: nx.Graph) -> dict[int, tuple[float, float]]:
+    if len(G) == 0:
+        return {}
+    counts = [G.nodes[n]["size"] for n in G.nodes]
+    avg = np.mean(counts) if counts else 1.0
+    max_count = max(counts) if counts else 1.0
+    base_k = 1 / np.sqrt(len(G))
+    k = base_k * (1 + avg / max_count)
+    try:
+        return nx.spring_layout(G, seed=42, k=k, weight=None)
+    except Exception:
+        return nx.spectral_layout(G)
 
-    fig, ax = plt.subplots(figsize=(6, 5))
+
+def plot_graph(G: nx.Graph, metric: str, output_path: Path, title: str) -> None:
+    pos = compute_layout(G)
+    colors = [G.nodes[n][metric] for n in G.nodes]
+    counts = [G.nodes[n]["size"] for n in G.nodes]
+    if counts:
+        sizes = np.interp(counts, [min(counts), max(counts)], [60, 300])
+    else:
+        sizes = []
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    fig.patch.set_facecolor("#0f0f0f")
+    ax.set_facecolor("#0f0f0f")
     nodes = nx.draw_networkx_nodes(
         G,
         pos,
@@ -59,16 +80,23 @@ def plot_graph(G: nx.Graph, metric: str, output_path: Path, title: str) -> None:
         ax=ax,
         vmin=min(colors),
         vmax=max(colors),
+        linewidths=0.5,
+        edgecolors="white",
     )
-    nx.draw_networkx_edges(G, pos, ax=ax, alpha=0.5)
-    nx.draw_networkx_labels(G, pos, labels={n: G.nodes[n]["label"] for n in G.nodes}, font_size=8)
+    nx.draw_networkx_edges(G, pos, ax=ax, alpha=0.35, edge_color="#cccccc")
+    label_candidates = sorted(G.nodes, key=lambda n: G.nodes[n]["size"], reverse=True)
+    label_limit = max(5, int(0.15 * len(label_candidates)))
+    label_nodes = label_candidates[:label_limit]
+    label_dict = {n: G.nodes[n]["label"] for n in label_nodes}
+    nx.draw_networkx_labels(G, pos, labels=label_dict, font_size=8, font_color="white")
+    ax.grid(True, color="rgba(255,255,255,0.08)")
     cbar = fig.colorbar(nodes, ax=ax, label=title)
     cbar.ax.tick_params(labelsize=8)
-    ax.set_title(title)
+    ax.set_title(title, color="white")
     ax.set_axis_off()
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=300)
+    fig.savefig(output_path, dpi=300, facecolor=fig.get_facecolor())
     plt.close(fig)
 
 

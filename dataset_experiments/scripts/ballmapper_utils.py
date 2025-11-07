@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 import networkx as nx
 import numpy as np
@@ -47,6 +47,7 @@ class BallMapperNode:
     members: List[int]
     size: int
     metrics: Dict[str, float] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def mean_obesity_rate(self) -> float:
@@ -127,6 +128,12 @@ def build_nodes(
                 metrics[col] = float(np.mean(df.iloc[member_array][col].to_numpy()))
             else:
                 metrics[col] = 0.0
+        row = df.iloc[center_idx]
+        metadata = {
+            "region_name": row.get("Region", ""),
+            "age_band": row.get("Patient Age Band (Years old)", ""),
+            "gender_label": row.get("Gender", ""),
+        }
         nodes.append(
             BallMapperNode(
                 index=node_idx,
@@ -134,6 +141,7 @@ def build_nodes(
                 members=list(members),
                 size=len(members),
                 metrics=metrics,
+                metadata=metadata,
             )
         )
     return nodes
@@ -148,6 +156,7 @@ def build_graph(nodes: Sequence[BallMapperNode], labels: Sequence[str]) -> nx.Gr
             "label": labels[node.center_idx],
         }
         attrs.update(node.metrics)
+        attrs.update(node.metadata)
         G.add_node(node.index, **attrs)
     for i in range(len(nodes)):
         members_i = set(nodes[i].members)
@@ -167,5 +176,6 @@ def nodes_to_dataframe(nodes: Sequence[BallMapperNode], labels: Sequence[str]) -
             "members": node.members,
         }
         record.update(node.metrics)
+        record.update(node.metadata)
         records.append(record)
     return pd.DataFrame(records)
