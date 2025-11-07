@@ -24,3 +24,6 @@ ENV/
 
 # macOS metadata
 .DS_Store
+
+# agent files
+AgentContext.md
