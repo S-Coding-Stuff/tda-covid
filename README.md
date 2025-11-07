@@ -12,8 +12,3 @@ The Ball Mapper method provides a topological summary of high-dimensional data b
 Here, each ball captures a group of regions with similar socio-economic profiles. By colouring these balls according to COVID-19 case intensity, the method reveals structural relationships that are hard to see with traditional plots.
 
 This project reproduces and extends the results of the original paper using an entirely Python toolchain.
-
----
-
-## 📂 Repository Structure
-
