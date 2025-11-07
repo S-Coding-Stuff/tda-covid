@@ -1,0 +1,13 @@
+# Core scientific stack
+numpy>=1.23
+scipy>=1.9
+pandas>=1.5
+scikit-learn>=1.1
+
+# Visualisation and notebooks
+matplotlib>=3.6
+seaborn>=0.12
+jupyterlab>=3.4
+
+# Topological Data Analysis utilities
+scikit-tda>=0.1.3
