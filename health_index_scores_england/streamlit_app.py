@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
+from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import networkx as nx
 import numpy as np
@@ -25,6 +27,25 @@ try:
     from pyproj import Transformer
 except ImportError:
     Transformer = None
+
+try:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.lib.utils import ImageReader
+    from reportlab.platypus import (
+        Image as PDFImage,
+        Paragraph,
+        SimpleDocTemplate,
+        Spacer,
+        Table,
+        TableStyle,
+    )
+
+    REPORTLAB_AVAILABLE = True
+except ImportError:
+    REPORTLAB_AVAILABLE = False
 
 SHAPELY_AVAILABLE = all(v is not None for v in (mapping, shape, transform, Transformer))
 TRANSFORMER = (
@@ -257,7 +278,7 @@ def load_geojson(path: str | None = None) -> Tuple[Dict[str, Any], List[str]]:
     return data, codes
 
 
-def sidebar_filters(df: pd.DataFrame) -> pd.DataFrame:
+def sidebar_filters(df: pd.DataFrame) -> tuple[pd.DataFrame, List[str], List[str]]:
     st.sidebar.markdown("### Filters")
     source_options = sorted(df["Source"].unique())
     selected_sources = st.sidebar.multiselect("Source", source_options, default=source_options)
@@ -265,7 +286,7 @@ def sidebar_filters(df: pd.DataFrame) -> pd.DataFrame:
     default_area_types = [atype for atype in area_types if atype.lower() != "country"]
     selected_area_types = st.sidebar.multiselect("Area Type", area_types, default=default_area_types)
     filtered = df[df["Source"].isin(selected_sources) & df["Area Type"].isin(selected_area_types)].copy()
-    return filtered
+    return filtered, selected_sources, selected_area_types
 
 
 def choose_features(df: pd.DataFrame) -> tuple[List[str], str]:
@@ -323,13 +344,17 @@ def build_area_assignment_df(
                 "ball_label": ball_label,
             }
             for col in metric_columns:
-                record[col] = node.metrics.get(col)
+                value = node.metrics.get(col)
+                if value is None or (isinstance(value, float) and np.isnan(value)):
+                    value = row.get(col)
+                record[col] = value
             records.append(record)
     map_df = pd.DataFrame(records)
     if map_df.empty:
         return map_df
     map_df = map_df.dropna(subset=["Area Code"])
     map_df = map_df.drop_duplicates(subset=["Area Code"], keep="first")
+    map_df["Area Code"] = map_df["Area Code"].astype(str)
     for col in metric_columns:
         if col in map_df.columns:
             map_df[col] = pd.to_numeric(map_df[col], errors="coerce")
@@ -342,18 +367,18 @@ def render_geo_overlay(
     geojson: Dict[str, Any],
     color_metric: str,
     feature_cols: List[str],
-) -> None:
+) -> Optional[go.Figure]:
     if map_df.empty:
-        st.info("No overlapping local authority records available for the geographic overlay.")
-        return
+        st.info("No LTLA/UTLA local authority rows available for the geographic overlay. Adjust filters.")
+        return None
     if color_metric not in map_df.columns:
         st.warning(f"{color_metric} unavailable for the geographic overlay.")
-        return
+        return None
     color_values = pd.to_numeric(map_df[color_metric], errors="coerce")
     map_df = map_df.assign(**{color_metric: color_values})
     if color_values.notna().sum() == 0:
         st.warning(f"{color_metric} has no numeric data to colour the map.")
-        return
+        return None
     hover_fields = []
     if color_metric in map_df.columns:
         hover_fields.append(color_metric)
@@ -389,6 +414,196 @@ def render_geo_overlay(
         height=720,
     )
     st.plotly_chart(fig, use_container_width=True)
+    return fig
+
+
+def render_barcodes(barcodes: Dict[str, np.ndarray]) -> go.Figure | None:
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, subplot_titles=("H0 barcode", "H1 barcode"))
+    colors = {"H0": "skyblue", "H1": "salmon"}
+    for row, dim in enumerate(["H0", "H1"], start=1):
+        diagram = barcodes.get(dim, np.empty((0, 2)))
+        for idx, (birth, death) in enumerate(diagram):
+            death = death if np.isfinite(death) else birth + 1.0
+            fig.add_trace(
+                go.Scatter(
+                    x=[birth, death],
+                    y=[idx, idx],
+                    mode="lines",
+                    line=dict(color=colors[dim], width=3),
+                    showlegend=False,
+                ),
+                row=row,
+                col=1,
+            )
+    fig.update_yaxes(title_text="Intervals", showticklabels=False, row=1, col=1)
+    fig.update_xaxes(title_text="Filtration value")
+    fig.update_layout(
+        height=400,
+        margin=dict(l=20, r=20, t=40, b=20),
+        plot_bgcolor="rgba(12,12,12,1)",
+        paper_bgcolor="rgba(12,12,12,1)",
+        font=dict(color="#f0f0f0"),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    return fig
+
+
+def figure_to_png_bytes(fig: Optional[go.Figure], scale: int = 3) -> Optional[bytes]:
+    if fig is None:
+        return None
+    try:
+        return fig.to_image(format="png", scale=scale)
+    except Exception:
+        return None
+
+
+def build_report_context(
+    *,
+    preset_name: str,
+    preset_notes: str,
+    epsilon: float,
+    normalization: str,
+    feature_cols: List[str],
+    color_metric: str,
+    size_metric: str,
+    sources: List[str],
+    area_types: List[str],
+    filtered_df: pd.DataFrame,
+    node_df: pd.DataFrame,
+    node_summary: str,
+    ballmapper_fig: go.Figure,
+    map_fig: Optional[go.Figure],
+    barcode_fig: Optional[go.Figure],
+    ballmapper_png_bytes: Optional[bytes],
+) -> Dict[str, Any]:
+    dataset_stats = {
+        "rows": int(len(filtered_df)),
+        "sources": len(sources),
+        "area_types": len(area_types),
+    }
+    node_stats = {
+        "count": int(len(node_df)),
+        "avg_size": float(node_df["size"].mean()) if not node_df.empty else 0.0,
+    }
+    top_nodes: List[Dict[str, Any]] = []
+    bottom_nodes: List[Dict[str, Any]] = []
+    if not node_df.empty and color_metric in node_df.columns:
+        top_nodes = node_df.sort_values(color_metric, ascending=False).head(5).to_dict("records")
+        bottom_nodes = node_df.sort_values(color_metric, ascending=True).head(5).to_dict("records")
+    ball_img = figure_to_png_bytes(ballmapper_fig, scale=4) if ballmapper_fig else None
+    images = {
+        "ballmapper": ball_img or ballmapper_png_bytes,
+        "map": figure_to_png_bytes(map_fig, scale=3),
+        "barcode": figure_to_png_bytes(barcode_fig, scale=3),
+    }
+    context = {
+        "title": "Health Index Ball Mapper Report",
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "preset_name": preset_name,
+        "preset_notes": preset_notes,
+        "epsilon": f"{epsilon:.3f}",
+        "normalization": normalization,
+        "feature_cols": feature_cols,
+        "color_metric": color_metric,
+        "size_metric": size_metric,
+        "sources": sources,
+        "area_types": area_types,
+        "dataset": dataset_stats,
+        "node_summary": node_summary,
+        "node_stats": node_stats,
+        "top_nodes": top_nodes,
+        "bottom_nodes": bottom_nodes,
+        "images": images,
+    }
+    return context
+
+
+def render_report_pdf(context: Dict[str, Any]) -> bytes:
+    if not REPORTLAB_AVAILABLE:
+        raise RuntimeError("ReportLab is not installed; unable to generate PDF.")
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, title=context["title"])
+    styles = getSampleStyleSheet()
+    story: List[Any] = []
+
+    def add_paragraph(text: str, style_name: str = "Normal", space: float = 10) -> None:
+        story.append(Paragraph(text, styles[style_name]))
+        story.append(Spacer(1, space))
+
+    add_paragraph(f"<b>{context['title']}</b>", "Title", space=6)
+    add_paragraph(
+        f"Generated: {context['generated_at']} &nbsp;&nbsp; Preset: <b>{context['preset_name']}</b> &nbsp;&nbsp; ε={context['epsilon']}",
+        space=12,
+    )
+    config_lines = [
+        f"Normalisation: {context['normalization']}",
+        f"Colour metric: {context['color_metric']}",
+        f"Node size metric: {context['size_metric']}",
+        f"Features ({len(context['feature_cols'])}): {', '.join(context['feature_cols'])}",
+    ]
+    if context["preset_notes"]:
+        config_lines.append(f"Preset notes: {context['preset_notes']}")
+    add_paragraph("<br/>".join(config_lines))
+
+    dataset = context["dataset"]
+    node_stats = context["node_stats"]
+    add_paragraph(
+        f"Filtered rows: {dataset['rows']} &nbsp;&nbsp; Sources: {dataset['sources']} &nbsp;&nbsp; Area types: {dataset['area_types']} "
+        f"&nbsp;&nbsp; Nodes: {node_stats['count']} &nbsp;&nbsp; Avg node size: {node_stats['avg_size']:.1f}"
+    )
+    if context["node_summary"]:
+        add_paragraph(f"<b>Key observations:</b> {context['node_summary']}")
+
+    def add_image_section(label: str, image_bytes: Optional[bytes]) -> None:
+        if not image_bytes:
+            return
+        story.append(Paragraph(f"<b>{label}</b>", styles["Heading2"]))
+        img_stream = BytesIO(image_bytes)
+        image_reader = ImageReader(img_stream)
+        width, height = image_reader.getSize()
+        max_width = 6.2 * inch
+        aspect = height / width if width else 1.0
+        img_stream.seek(0)
+        story.append(PDFImage(img_stream, width=max_width, height=max_width * aspect))
+        story.append(Spacer(1, 12))
+
+    add_image_section("Ball Mapper graph", context["images"].get("ballmapper"))
+    add_image_section("Geographic overlay", context["images"].get("map"))
+    add_image_section("Persistence barcodes", context["images"].get("barcode"))
+
+    def add_table(title: str, rows: List[Dict[str, Any]]) -> None:
+        if not rows:
+            return
+        story.append(Paragraph(f"<b>{title}</b>", styles["Heading2"]))
+        data = [["Label", "Size", context["color_metric"]]]
+        for row in rows:
+            data.append(
+                [
+                    row.get("label", ""),
+                    str(row.get("size", "")),
+                    f"{row.get(context['color_metric'], 0):.2f}",
+                ]
+            )
+        table = Table(data, colWidths=[3.5 * inch, 1.0 * inch, 1.5 * inch])
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f0f0f0")),
+                    ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ]
+            )
+        )
+        story.append(table)
+        story.append(Spacer(1, 12))
+
+    add_table(f"Top nodes by {context['color_metric']}", context["top_nodes"])
+    add_table(f"Lowest nodes by {context['color_metric']}", context["bottom_nodes"])
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 def build_plotly_graph(G: nx.Graph, color_metric: str, size_metric: str, feature_cols: List[str]) -> go.Figure:
@@ -474,36 +689,6 @@ def compute_barcodes(points: np.ndarray, maxdim: int = 1) -> Dict[str, np.ndarra
     return {"H0": diagrams[0], "H1": diagrams[1] if len(diagrams) > 1 else np.empty((0, 2))}
 
 
-def render_barcodes(barcodes: Dict[str, np.ndarray]) -> None:
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, subplot_titles=("H0 barcode", "H1 barcode"))
-    colors = {"H0": "skyblue", "H1": "salmon"}
-    for row, dim in enumerate(["H0", "H1"], start=1):
-        diagram = barcodes.get(dim, np.empty((0, 2)))
-        for idx, (birth, death) in enumerate(diagram):
-            death = death if np.isfinite(death) else birth + 1.0
-            fig.add_trace(
-                go.Scatter(
-                    x=[birth, death],
-                    y=[idx, idx],
-                    mode="lines",
-                    line=dict(color=colors[dim], width=3),
-                    showlegend=False,
-                ),
-                row=row,
-                col=1,
-            )
-    fig.update_yaxes(title_text="Intervals", showticklabels=False, row=1, col=1)
-    fig.update_xaxes(title_text="Filtration value")
-    fig.update_layout(
-        height=400,
-        margin=dict(l=20, r=20, t=40, b=20),
-        plot_bgcolor="rgba(12,12,12,1)",
-        paper_bgcolor="rgba(12,12,12,1)",
-        font=dict(color="#f0f0f0"),
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-
 def summarize_nodes(node_df: pd.DataFrame, color_metric: str) -> str:
     if node_df.empty or color_metric not in node_df.columns:
         return "No nodes to summarise."
@@ -525,7 +710,7 @@ def main() -> None:
         "Filter sources/area types, choose feature sets, and generate Ball Mapper graphs on the fly."
     )
     df = load_dataset()
-    filtered_df = sidebar_filters(df)
+    filtered_df, selected_sources, selected_area_types = sidebar_filters(df)
     if "bm_feature_cols" not in st.session_state:
         st.session_state["bm_feature_cols"] = DEFAULT_FEATURES
     if "bm_norm_method" not in st.session_state:
@@ -640,12 +825,14 @@ def main() -> None:
                 )
             else:
                 st.info("PNG export unavailable in this environment (Kaleido missing). Download the HTML version instead.")
-        st.info(summarize_nodes(node_df, color_metric))
+        node_summary_text = summarize_nodes(node_df, color_metric)
+        st.info(node_summary_text)
         st.markdown("#### Persistence barcodes")
         landmark_points = normalized[centers] if centers else np.empty((0, normalized.shape[1]))
         barcodes = compute_barcodes(landmark_points)
-        render_barcodes(barcodes)
+        barcode_fig = render_barcodes(barcodes)
         st.markdown("#### Geographic overlay (local authority view)")
+        map_fig = None
         try:
             geojson_data, geo_codes = load_geojson(str(GEOJSON_PATH) if GEOJSON_PATH else None)
             map_df = build_area_assignment_df(
@@ -657,7 +844,7 @@ def main() -> None:
             if map_df.empty:
                 st.info("No local authority rows match the boundary file after filtering.")
             else:
-                render_geo_overlay(
+                map_fig = render_geo_overlay(
                     map_df,
                     geojson_data,
                     color_metric,
@@ -665,6 +852,7 @@ def main() -> None:
                 )
         except FileNotFoundError as exc:
             st.info(str(exc))
+            map_fig = None
         st.subheader("Node summary")
         st.dataframe(node_df)
         st.download_button(
@@ -679,6 +867,39 @@ def main() -> None:
             file_name="health_index_ballmapper_nodes.json",
             mime="application/json",
         )
+        report_context = build_report_context(
+            preset_name=preset_name,
+            preset_notes=preset_cfg.get("notes", ""),
+            epsilon=epsilon,
+            normalization=st.session_state["bm_norm_method"],
+            feature_cols=st.session_state["bm_feature_cols"],
+            color_metric=color_metric,
+            size_metric=size_metric,
+            sources=selected_sources,
+            area_types=selected_area_types,
+            filtered_df=filtered_df,
+            node_df=node_df,
+            node_summary=node_summary_text,
+            ballmapper_fig=fig,
+            map_fig=map_fig,
+            barcode_fig=barcode_fig,
+            ballmapper_png_bytes=png_bytes,
+        )
+        st.session_state["latest_report_context"] = report_context
+        if REPORTLAB_AVAILABLE:
+            try:
+                pdf_bytes = render_report_pdf(report_context)
+                st.download_button(
+                    "Download analysis PDF",
+                    data=pdf_bytes,
+                    file_name="health_index_ballmapper_report.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+            except Exception as exc:
+                st.warning(f"Report generation failed: {exc}")
+        else:
+            st.info("Install `reportlab` to enable PDF report downloads.")
 
 
 if __name__ == "__main__":
