@@ -28,14 +28,15 @@ feature_cols = [
     "norm_items_yoy_pct",
     "norm_patients_yoy_pct",
     "norm_net_cost_yoy_pct",
-    "norm_share_items_female",
-    "norm_share_items_60plus",
+    "norm_gender_items_share",
+    "norm_share_semaglutide",
+    "norm_share_liraglutide",
 ]
 X = ballmapper_df[feature_cols].to_numpy()
 color_values = ballmapper_df["obesity_rate"].to_numpy()
 labels = ballmapper_df["Region"]
 ```
-> The preprocessing script also stores the raw (non-normalised) counterparts for each `"norm_*"` column, so you can colour nodes in whatever metric you prefer (cost per patient, gender shares, YoY deltas, etc.).
+> The preprocessing script also stores the raw (non-normalised) counterparts for each `"norm_*"` column, so you can colour nodes in whatever metric you prefer (cost per patient, gender shares, **drug shares**, YoY deltas, etc.).
 
 ## 2. Build a Ball Mapper cover
 

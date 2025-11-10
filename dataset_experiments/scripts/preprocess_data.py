@@ -21,6 +21,16 @@ NUMERIC_COLUMNS = {
     "Adult obesity rate 2022/23 (%)": "obesity_rate",
 }
 GROUP_KEYS = ["Region Code", "Region", "Patient Age Band (Years old)", "Gender"]
+DRUG_CLASSES = {
+    "Semaglutide": "Semaglutide",
+    "Tirzepatide": "Tirzepatide",
+    "Liraglutide": "Liraglutide",
+    "Dulaglutide": "Dulaglutide",
+    "Exenatide": "Exenatide",
+    "Lixisenatide": "Lixisenatide",
+    "Ins degludec/liraglutide": "Insulin combo",
+}
+DEFAULT_DRUG_CLASS = "Other"
 
 
 def _clean_numeric(series: pd.Series) -> pd.Series:
@@ -135,6 +145,7 @@ def main() -> None:
         raise RuntimeError(f"No rows found for {TARGET_YEAR}")
     df_future = df_all[df_all["Year"] == COMPARISON_YEAR].copy()
 
+    df_current["Drug Class"] = df_current["BNF Chemical Substance"].map(DRUG_CLASSES).fillna(DEFAULT_DRUG_CLASS)
     base_current = aggregate_base_metrics(df_current)
     base_future = (
         aggregate_base_metrics(df_future)
@@ -149,6 +160,30 @@ def main() -> None:
         .sort_values(GROUP_KEYS)
         .reset_index(drop=True)
     )
+    drug_totals = (
+        df_current.groupby(GROUP_KEYS + ["Drug Class"], as_index=False)["Items"]
+        .sum()
+        .rename(columns={"Items": "drug_items"})
+    )
+    drug_pivot = drug_totals.pivot_table(
+        index=GROUP_KEYS,
+        columns="Drug Class",
+        values="drug_items",
+        fill_value=0,
+    )
+    drug_pivot.columns = [f"items_{col.replace(' ', '_').lower()}" for col in drug_pivot.columns]
+    clean = (
+        clean.merge(drug_pivot, on=GROUP_KEYS, how="left")
+        .fillna(0)
+        .sort_values(GROUP_KEYS)
+        .reset_index(drop=True)
+    )
+    item_cols = [col for col in clean.columns if col.startswith("items_") and col not in {"items", "items_per_patient"}]
+    clean["items_total"] = clean[item_cols].sum(axis=1).replace(0, np.nan)
+    for col in item_cols:
+        share_col = col.replace("items_", "share_")
+        clean[share_col] = (clean[col] / clean["items_total"]).fillna(0)
+    clean.drop(columns=["items_total"], inplace=True)
     clean.to_csv(CLEAN_OUTPUT, index=False)
 
     feature_columns = [
@@ -164,6 +199,7 @@ def main() -> None:
         "net_cost_yoy_pct",
         "gender_items_share",
     ]
+    feature_columns += [col for col in clean.columns if col.startswith("share_")]
     normalized = min_max_scale(clean, feature_columns)
     normalized[
         GROUP_KEYS

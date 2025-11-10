@@ -40,7 +40,7 @@ pip install -r requirements.txt
 python dataset_experiments/scripts/preprocess_data.py
 ```
 Creates:
-- `tda_obesity_prescribing_clean.csv` – aggregated metrics (items/patients/cost, obesity rate, YoY deltas, gender share).
+- `tda_obesity_prescribing_clean.csv` – aggregated metrics (items/patients/cost, obesity rate, YoY deltas, gender share, drug-class totals/shares).
 - `tda_obesity_ballmapper_input.csv` – min–max scaled features ready for Ball Mapper.
 
 ### 2. Static figures
@@ -61,9 +61,15 @@ streamlit run dataset_experiments/streamlit_app.py
 ```
 Tabs include:
 - **Overview** – project context + dataset stats.
-- **Explorer** – scatter + YoY table with region/age/gender filters.
-- **Ball Mapper** – interactive BM graph with ε nudges, colour toggles, feature-set presets.
+- **Explorer** – scatter + YoY table with region/age/gender filters plus a *Drug Mix Explorer* (interactive bar/table of drug shares).
+- **Ball Mapper** – interactive BM graph with ε nudges, colour toggles, feature-set presets (including a *Drug Mix* preset and colouring by individual drug shares).
 - **Preset views** – quick configurations for the scatter explorer.
+
+### 5. Health Index playground
+```bash
+streamlit run health_index_scores_england/streamlit_app.py
+```
+Explore the `health_index_combined_2021.csv` dataset with fully configurable Ball Mapper controls (area filters, feature selection, colouring by any metric, downloadable node summaries).
 
 ---
 
@@ -71,7 +77,8 @@ Tabs include:
 
 - **Aggregation**: Region × Age band × Gender with summed `Items`, `Patients`, `Net Cost`, averaged obesity rate, per-patient/per-item costs, and YoY deltas (Dec 23–Nov 24 vs Dec 22–Nov 23 when available).
 - **Gender share**: within each region–age slice we compute the proportion of items attributed to each gender.
-- **Ball Mapper**: default point cloud uses `[norm_items, norm_patients, norm_net_cost, norm_obesity_rate]`. Preset buttons in the app swap in other feature sets (cost focus, outlier hunt, etc.) and adjust ε/colour automatically.
+- **Drug mix**: class-level totals (`items_semaglutide`, `items_liraglutide`, …) and fractional shares (`share_semaglutide`, …) capture therapy uptake patterns.
+- **Ball Mapper**: default point cloud uses `[norm_items, norm_patients, norm_net_cost, norm_obesity_rate]`. Preset buttons in the app swap in other feature sets (cost focus, outlier hunt, *drug mix*) and adjust ε/colour automatically.
 
 ---
 
@@ -81,11 +88,13 @@ Tabs include:
 2. **Gender stack bars** per region.  
 3. **Age-band heatmap** of item share.  
 4. **Patients vs Items** scatter (Region × Age × Gender).  
-5. **Ball Mapper** screenshots coloured by:
+5. **Drug Mix Explorer** bar chart (from Streamlit) highlighting class shares for a selected Region/Age/Gender slice.  
+6. **Ball Mapper** screenshots coloured by:
    - Adult obesity rate (%)
    - Net ingredient cost (£)
    - Items
    - Female share
+   - Semaglutide share (or other drug classes)
 
 Use the Streamlit quick buttons or the CLI to capture each colouring.
 

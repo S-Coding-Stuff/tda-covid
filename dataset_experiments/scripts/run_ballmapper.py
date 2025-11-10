@@ -69,8 +69,9 @@ def plot_graph(G: nx.Graph, metric: str, output_path: Path, title: str) -> None:
         sizes = []
 
     fig, ax = plt.subplots(figsize=(7, 6))
-    fig.patch.set_facecolor("#0f0f0f")
-    ax.set_facecolor("#0f0f0f")
+    dark_bg = (0.06, 0.06, 0.06)
+    fig.patch.set_facecolor(dark_bg)
+    ax.set_facecolor(dark_bg)
     nodes = nx.draw_networkx_nodes(
         G,
         pos,
@@ -89,7 +90,7 @@ def plot_graph(G: nx.Graph, metric: str, output_path: Path, title: str) -> None:
     label_nodes = label_candidates[:label_limit]
     label_dict = {n: G.nodes[n]["label"] for n in label_nodes}
     nx.draw_networkx_labels(G, pos, labels=label_dict, font_size=8, font_color="white")
-    ax.grid(True, color="rgba(255,255,255,0.08)")
+    ax.grid(True, color=(1, 1, 1, 0.08))
     cbar = fig.colorbar(nodes, ax=ax, label=title)
     cbar.ax.tick_params(labelsize=8)
     ax.set_title(title, color="white")
@@ -117,6 +118,13 @@ def parse_args() -> argparse.Namespace:
             "patients_yoy_pct",
             "net_cost_yoy_pct",
             "gender_items_share",
+            "share_semaglutide",
+            "share_liraglutide",
+            "share_tirzepatide",
+            "share_dulaglutide",
+            "share_exenatide",
+            "share_insulin_combo",
+            "share_lixisenatide",
         ],
         default="obesity_rate",
         help="Metric used for node coloring.",

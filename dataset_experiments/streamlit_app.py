@@ -35,6 +35,18 @@ BALL_COLOR_OPTIONS = [
     "net_cost_yoy_pct",
     "gender_items_share",
 ]
+DRUG_SHARE_COLUMNS = {
+    "share_dulaglutide": "Dulaglutide share",
+    "share_exenatide": "Exenatide share",
+    "share_insulin_combo": "Insulin combo share",
+    "share_liraglutide": "Liraglutide share",
+    "share_lixisenatide": "Lixisenatide share",
+    "share_semaglutide": "Semaglutide share",
+    "share_tirzepatide": "Tirzepatide share",
+}
+for col in DRUG_SHARE_COLUMNS:
+    if col not in BALL_COLOR_OPTIONS:
+        BALL_COLOR_OPTIONS.append(col)
 CORE_FEATURES = ["norm_items", "norm_patients", "norm_net_cost", "norm_obesity_rate"]
 FEATURE_SET_LIBRARY = {
     "core": {
@@ -62,6 +74,18 @@ FEATURE_SET_LIBRARY = {
         "color": "obesity_rate",
         "epsilon": 0.1,
         "notes": "Smaller ε to surface isolated demographic clusters.",
+    },
+    "drug_mix": {
+        "label": "Drug Mix",
+        "features": [
+            "norm_share_semaglutide",
+            "norm_share_liraglutide",
+            "norm_share_tirzepatide",
+            "norm_cost_per_patient",
+        ],
+        "color": "share_semaglutide",
+        "epsilon": 0.22,
+        "notes": "Focus on adoption of key GLP-1 therapies vs cost.",
     },
 }
 
@@ -482,6 +506,48 @@ def main() -> None:
             "The bubble size reflects patient counts; colours show the chosen metric."
         )
         streamlit_scatter(df, numeric_options)
+
+        st.subheader("Drug Mix Explorer")
+        drug_item_cols = [
+            col for col in df.columns if col.startswith("items_") and col not in {"items", "items_per_patient"}
+        ]
+        region_options = sorted(df["Region"].unique())
+        region_choice = st.selectbox("Region", region_options, key="drug_region")
+        age_options = ["All"] + sorted(df["Patient Age Band (Years old)"].unique())
+        age_choice = st.selectbox("Age band", age_options, key="drug_age")
+        gender_options = ["All"] + sorted(df["Gender"].unique())
+        gender_choice = st.selectbox("Gender", gender_options, key="drug_gender")
+        subset = df[df["Region"] == region_choice]
+        if age_choice != "All":
+            subset = subset[subset["Patient Age Band (Years old)"] == age_choice]
+        if gender_choice != "All":
+            subset = subset[subset["Gender"] == gender_choice]
+        if subset.empty:
+            st.info("No prescriptions for the selected slice.")
+        else:
+            drug_totals = subset[drug_item_cols].sum()
+            total_items = drug_totals.sum()
+            if total_items <= 0:
+                st.info("No prescriptions for the selected slice.")
+            else:
+                drug_shares = (drug_totals / total_items).fillna(0)
+                chart_df = pd.DataFrame(
+                    {
+                        "Drug": [col.replace("items_", "").replace("_", " ").title() for col in drug_shares.index],
+                        "Share": drug_shares.values,
+                    }
+                )
+                fig_drug = px.bar(
+                    chart_df,
+                    x="Drug",
+                    y="Share",
+                    color="Drug",
+                    text=chart_df["Share"].map(lambda x: f"{x:.1%}"),
+                )
+                fig_drug.update_layout(yaxis_tickformat=".0%", showlegend=False, title="Prescription share by drug class")
+                st.plotly_chart(fig_drug, use_container_width=True)
+                st.dataframe(chart_df.sort_values("Share", ascending=False), use_container_width=True)
+
         st.subheader("Year-on-year summary")
         yoy_cols = ["items_yoy_pct", "patients_yoy_pct", "net_cost_yoy_pct"]
         id_vars = [col for col in ["Region", "Patient Age Band (Years old)", "Gender"] if col in df.columns]
@@ -514,12 +580,18 @@ def main() -> None:
             f"Current feature set: **{current_feature_cfg['label']}** "
             f"→ `{', '.join(current_feature_cfg['features'])}`"
         )
+        st.info(
+            f"Current feature set: **{current_feature_cfg['label']}** "
+            f"→ `{', '.join(current_feature_cfg['features'])}`"
+        )
+
         preset_colors = {
             "Obesity rate (%)": "obesity_rate",
             "Net ingredient cost (£)": "net_cost",
             "Items": "items",
             "Female share": "gender_items_share",
             "Cost per patient": "cost_per_patient",
+            "Semaglutide share": "share_semaglutide",
         }
         button_cols = st.columns(len(preset_colors))
         for col, (label, metric) in zip(button_cols, preset_colors.items()):

@@ -10,6 +10,28 @@ import pandas as pd
 
 DATA_DIR = Path(__file__).resolve().parents[1]
 BALLMAPPER_INPUT = DATA_DIR / "tda_obesity_ballmapper_input.csv"
+GROUP_KEYS = ["Region Code", "Region", "Patient Age Band (Years old)", "Gender"]
+
+SUMMARY_COLUMNS = [
+    "items",
+    "patients",
+    "net_cost",
+    "items_per_patient",
+    "cost_per_patient",
+    "cost_per_item",
+    "obesity_rate",
+    "items_yoy_pct",
+    "patients_yoy_pct",
+    "net_cost_yoy_pct",
+    "gender_items_share",
+    "share_dulaglutide",
+    "share_exenatide",
+    "share_insulin_combo",
+    "share_liraglutide",
+    "share_lixisenatide",
+    "share_semaglutide",
+    "share_tirzepatide",
+]
 
 FEATURE_COLUMNS = [
     "norm_items",
@@ -118,15 +140,23 @@ def build_nodes(
     df: pd.DataFrame,
     summary_columns: Iterable[str] | None = None,
 ) -> List[BallMapperNode]:
-    summary_columns = list(summary_columns or SUMMARY_COLUMNS)
+    if summary_columns is None:
+        numeric_cols = [col for col in df.columns if col not in GROUP_KEYS and pd.api.types.is_numeric_dtype(df[col])]
+    else:
+        numeric_cols = list(summary_columns)
     nodes: List[BallMapperNode] = []
     for node_idx, (center_idx, members) in enumerate(zip(centers, cover)):
         member_array = np.asarray(members, dtype=int)
         metrics = {}
-        for col in summary_columns:
-            if col in df.columns:
-                metrics[col] = float(np.mean(df.iloc[member_array][col].to_numpy()))
-            else:
+        for col in numeric_cols:
+            if col not in df.columns:
+                metrics[col] = 0.0
+                continue
+            values = df.iloc[member_array][col]
+            try:
+                numeric = pd.to_numeric(values, errors="coerce")
+                metrics[col] = float(np.nanmean(numeric))
+            except Exception:
                 metrics[col] = 0.0
         row = df.iloc[center_idx]
         metadata = {
