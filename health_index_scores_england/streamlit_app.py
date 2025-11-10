@@ -393,7 +393,12 @@ def main() -> None:
         st.plotly_chart(fig, use_container_width=True)
         st.caption(caption_text)
         fig_html = fig.to_html(include_plotlyjs="cdn")
-        png_bytes = fig.to_image(format="png", scale=2)
+        png_bytes = None
+        png_error = None
+        try:
+            png_bytes = fig.to_image(format="png", scale=2)
+        except Exception as exc:  # Kaleido may be unavailable on some deployments
+            png_error = str(exc)
         plot_col1, plot_col2 = st.columns(2)
         with plot_col1:
             st.download_button(
@@ -404,13 +409,16 @@ def main() -> None:
                 use_container_width=True,
             )
         with plot_col2:
-            st.download_button(
-                "Download plot (PNG)",
-                data=png_bytes,
-                file_name="health_index_ballmapper_plot.png",
-                mime="image/png",
-                use_container_width=True,
-            )
+            if png_bytes:
+                st.download_button(
+                    "Download plot (PNG)",
+                    data=png_bytes,
+                    file_name="health_index_ballmapper_plot.png",
+                    mime="image/png",
+                    use_container_width=True,
+                )
+            else:
+                st.info("PNG export unavailable in this environment (Kaleido missing). Download the HTML version instead.")
         st.info(summarize_nodes(node_df, color_metric))
         st.markdown("#### Persistence barcodes")
         landmark_points = normalized[centers] if centers else np.empty((0, normalized.shape[1]))
