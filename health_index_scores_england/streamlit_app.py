@@ -2,17 +2,36 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List, Tuple
 
 import networkx as nx
 import numpy as np
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 from ripser import ripser
 
 import sys
+
+try:  # Optional dependency for GeoJSON preprocessing
+    from shapely.geometry import mapping, shape
+    from shapely.ops import transform
+except ImportError:
+    mapping = shape = transform = None
+
+try:
+    from pyproj import Transformer
+except ImportError:
+    Transformer = None
+
+SHAPELY_AVAILABLE = all(v is not None for v in (mapping, shape, transform, Transformer))
+TRANSFORMER = (
+    Transformer.from_crs("EPSG:27700", "EPSG:4326", always_xy=True)
+    if SHAPELY_AVAILABLE
+    else None
+)
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -22,10 +41,23 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / ".tda_lib"))
 import health_index_scores_england.ballmapper_utils as bm
 
 DATA_PATH = Path(__file__).resolve().parent / "health_index_combined_2021.csv"
+GEOJSON_CANDIDATES = list(
+    Path(__file__).resolve().parent.glob("Local_Authority_Districts*.geojson")
+)
+GEOJSON_PATH = GEOJSON_CANDIDATES[0] if GEOJSON_CANDIDATES else None
+SIMPLIFIED_GEOJSON_PATH = Path(__file__).resolve().parent / "england_la_simplified.geojson"
+GEOJSON_SIMPLIFY_TOLERANCE = 500.0  # metres (data in British National Grid)
+COORD_DECIMALS = 5
 DEFAULT_FEATURES = [
     "Healthy People Domain",
     "Healthy Lives Domain",
     "Healthy Places Domain",
+]
+MAP_HOVER_FIELDS = [
+    "Healthy People Domain",
+    "Unemployment [Pl4]",
+    "Life expectancy [Pe3]",
+    "Mental health [Pe]",
 ]
 PRESET_CONFIGS = {
     "Custom": {
@@ -119,12 +151,110 @@ PRESET_CONFIGS = {
         "color": "Life expectancy [Pe3]",
         "notes": "Socioeconomic–behavioural–environmental gradient vs life expectancy.",
     },
+    "🌐 Regional Health Inequality": {
+        "features": [
+            "Life expectancy [Pe3]",
+            "Mental health [Pe]",
+            "Diabetes [Pe5]",
+            "Respiratory conditions [Pe5]",
+            "Physical activity [L1]",
+            "Smoking [L1]",
+            "Alcohol misuse [L1]",
+            "Access to green space [Pl]",
+            "Air pollution [Pl5]",
+            "Unemployment [Pl4]",
+        ],
+        "color": "Healthy People Domain",
+        "notes": (
+            "Chronic disease, behaviours, environment, and deprivation jointly shaping health inequality. "
+            "Suggested ε≈0.4."
+        ),
+    },
 }
 
 
 @st.cache_data
 def load_dataset() -> pd.DataFrame:
     return bm.load_health_index_dataset(DATA_PATH)
+
+
+def _round_coords(value: Any, decimals: int) -> Any:
+    if isinstance(value, (float, int)):
+        return round(float(value), decimals)
+    if isinstance(value, (list, tuple)):
+        return [_round_coords(item, decimals) for item in value]
+    return value
+
+
+def _preprocess_geojson(source_path: Path) -> Dict[str, Any]:
+    with source_path.open("r", encoding="utf-8") as fh:
+        raw_data = json.load(fh)
+    processed_features: List[Dict[str, Any]] = []
+    for feature in raw_data.get("features", []):
+        props = feature.get("properties", {}) or {}
+        lad_code = str(props.get("LAD21CD", "")).strip()
+        if not lad_code.startswith("E"):
+            continue
+        geometry = feature.get("geometry")
+        if geometry and SHAPELY_AVAILABLE:
+            try:
+                geom = shape(geometry)
+                if not geom.is_valid:
+                    geom = geom.buffer(0)
+                geom = geom.simplify(GEOJSON_SIMPLIFY_TOLERANCE, preserve_topology=True)
+                if TRANSFORMER is not None:
+                    geom = transform(TRANSFORMER.transform, geom)
+                geometry = mapping(geom)
+            except Exception:
+                geometry = feature.get("geometry")
+        if geometry:
+            geometry = {
+                "type": geometry.get("type"),
+                "coordinates": _round_coords(geometry.get("coordinates"), COORD_DECIMALS),
+            }
+        processed_features.append(
+            {
+                "type": feature.get("type", "Feature"),
+                "properties": {
+                    "LAD21CD": lad_code,
+                    "LAD21NM": props.get("LAD21NM", ""),
+                },
+                "geometry": geometry,
+            }
+        )
+    return {"type": raw_data.get("type", "FeatureCollection"), "features": processed_features}
+
+
+def _ensure_simplified_geojson(base_path: Path | None) -> Tuple[Dict[str, Any], Path]:
+    if SIMPLIFIED_GEOJSON_PATH.exists():
+        with SIMPLIFIED_GEOJSON_PATH.open("r", encoding="utf-8") as fh:
+            return json.load(fh), SIMPLIFIED_GEOJSON_PATH
+    if base_path is None or not base_path.exists():
+        raise FileNotFoundError(
+            "Local authority GeoJSON file not found. Place it in `health_index_scores_england/`."
+        )
+    if SHAPELY_AVAILABLE:
+        data = _preprocess_geojson(base_path)
+        SIMPLIFIED_GEOJSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with SIMPLIFIED_GEOJSON_PATH.open("w", encoding="utf-8") as fh:
+            json.dump(data, fh, separators=(",", ":"))
+        return data, SIMPLIFIED_GEOJSON_PATH
+    with base_path.open("r", encoding="utf-8") as fh:
+        return json.load(fh), base_path
+
+
+@st.cache_data(show_spinner=False)
+def load_geojson(path: str | None = None) -> Tuple[Dict[str, Any], List[str]]:
+    base_path = Path(path) if path else GEOJSON_PATH
+    data, _ = _ensure_simplified_geojson(base_path)
+    codes = sorted(
+        {
+            feature.get("properties", {}).get("LAD21CD")
+            for feature in data.get("features", [])
+            if feature.get("properties", {}).get("LAD21CD")
+        }
+    )
+    return data, codes
 
 
 def sidebar_filters(df: pd.DataFrame) -> pd.DataFrame:
@@ -168,6 +298,97 @@ def render_dataset_summary(df: pd.DataFrame) -> None:
         file_name="health_index_filtered.csv",
         mime="text/csv",
     )
+
+
+def build_area_assignment_df(
+    df: pd.DataFrame,
+    nodes: List[bm.BallMapperNode],
+    color_metric: str,
+    feature_cols: List[str],
+) -> pd.DataFrame:
+    records: List[Dict[str, Any]] = []
+    metric_columns = set(MAP_HOVER_FIELDS + feature_cols + [color_metric])
+    for node in nodes:
+        ball_label = f"Ball {node.index}"
+        for member_idx in node.members:
+            row = df.iloc[member_idx]
+            area_code = row.get("Area Code")
+            if not isinstance(area_code, str):
+                continue
+            record: Dict[str, Any] = {
+                "Area Code": area_code.strip(),
+                "Area Name": row.get("Area Name", ""),
+                "Area Type": row.get("Area Type", ""),
+                "ball_id": node.index,
+                "ball_label": ball_label,
+            }
+            for col in metric_columns:
+                record[col] = node.metrics.get(col)
+            records.append(record)
+    map_df = pd.DataFrame(records)
+    if map_df.empty:
+        return map_df
+    map_df = map_df.dropna(subset=["Area Code"])
+    map_df = map_df.drop_duplicates(subset=["Area Code"], keep="first")
+    for col in metric_columns:
+        if col in map_df.columns:
+            map_df[col] = pd.to_numeric(map_df[col], errors="coerce")
+    map_df["ball_label"] = map_df["ball_label"].astype(str)
+    return map_df
+
+
+def render_geo_overlay(
+    map_df: pd.DataFrame,
+    geojson: Dict[str, Any],
+    color_metric: str,
+    feature_cols: List[str],
+) -> None:
+    if map_df.empty:
+        st.info("No overlapping local authority records available for the geographic overlay.")
+        return
+    if color_metric not in map_df.columns:
+        st.warning(f"{color_metric} unavailable for the geographic overlay.")
+        return
+    color_values = pd.to_numeric(map_df[color_metric], errors="coerce")
+    map_df = map_df.assign(**{color_metric: color_values})
+    if color_values.notna().sum() == 0:
+        st.warning(f"{color_metric} has no numeric data to colour the map.")
+        return
+    hover_fields = []
+    if color_metric in map_df.columns:
+        hover_fields.append(color_metric)
+    for feat in feature_cols:
+        if feat in map_df.columns:
+            hover_fields.append(feat)
+    hover_fields.extend(col for col in MAP_HOVER_FIELDS if col in map_df.columns)
+    hover_fields = list(dict.fromkeys(hover_fields))
+    hover_data = {col: True for col in hover_fields}
+    hover_data["ball_id"] = True
+    hover_data["ball_label"] = True
+    color_min = float(color_values.min())
+    color_max = float(color_values.max())
+    fig = px.choropleth_mapbox(
+        map_df,
+        geojson=geojson,
+        locations="Area Code",
+        featureidkey="properties.LAD21CD",
+        color=color_metric,
+        hover_name="Area Name",
+        hover_data=hover_data,
+        mapbox_style="carto-positron",
+        zoom=5.0,
+        opacity=0.8,
+        center={"lat": 53.4, "lon": -1.6},
+        color_continuous_scale="Viridis",
+        range_color=(color_min, color_max),
+    )
+    fig.update_layout(
+        margin=dict(l=10, r=10, t=40, b=10),
+        coloraxis_colorbar=dict(title=color_metric),
+        legend_title_text="",
+        height=720,
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def build_plotly_graph(G: nx.Graph, color_metric: str, size_metric: str, feature_cols: List[str]) -> go.Figure:
@@ -424,6 +645,26 @@ def main() -> None:
         landmark_points = normalized[centers] if centers else np.empty((0, normalized.shape[1]))
         barcodes = compute_barcodes(landmark_points)
         render_barcodes(barcodes)
+        st.markdown("#### Geographic overlay (local authority view)")
+        try:
+            geojson_data, geo_codes = load_geojson(str(GEOJSON_PATH) if GEOJSON_PATH else None)
+            map_df = build_area_assignment_df(
+                filtered_df, nodes, color_metric, st.session_state["bm_feature_cols"]
+            )
+            if not map_df.empty:
+                valid_codes = set(geo_codes)
+                map_df = map_df[map_df["Area Code"].isin(valid_codes)]
+            if map_df.empty:
+                st.info("No local authority rows match the boundary file after filtering.")
+            else:
+                render_geo_overlay(
+                    map_df,
+                    geojson_data,
+                    color_metric,
+                    st.session_state["bm_feature_cols"],
+                )
+        except FileNotFoundError as exc:
+            st.info(str(exc))
         st.subheader("Node summary")
         st.dataframe(node_df)
         st.download_button(
