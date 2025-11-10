@@ -194,9 +194,12 @@ PRESET_CONFIGS = {
 }
 
 
-@st.cache_data
-def load_dataset() -> pd.DataFrame:
-    return bm.load_health_index_dataset(DATA_PATH)
+YEAR_OPTIONS = sorted(bm.available_years().keys(), reverse=True)
+
+
+@st.cache_data(show_spinner=False)
+def load_dataset(year: str) -> pd.DataFrame:
+    return bm.load_health_index_dataset(year=year)
 
 
 def _round_coords(value: Any, decimals: int) -> Any:
@@ -306,12 +309,13 @@ def choose_features(df: pd.DataFrame) -> tuple[List[str], str]:
     return feature_cols or default_features, norm_method
 
 
-def render_dataset_summary(df: pd.DataFrame) -> None:
+def render_dataset_summary(df: pd.DataFrame, year: str) -> None:
     st.subheader("Filtered dataset")
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Rows", len(df))
     c2.metric("Sources", df["Source"].nunique())
     c3.metric("Area types", df["Area Type"].nunique())
+    c4.metric("Year", year)
     st.dataframe(df)
     st.download_button(
         "Download filtered CSV",
@@ -459,6 +463,7 @@ def figure_to_png_bytes(fig: Optional[go.Figure], scale: int = 3) -> Optional[by
 
 def build_report_context(
     *,
+    data_year: str,
     preset_name: str,
     preset_notes: str,
     epsilon: float,
@@ -480,6 +485,7 @@ def build_report_context(
         "rows": int(len(filtered_df)),
         "sources": len(sources),
         "area_types": len(area_types),
+        "year": data_year,
     }
     node_stats = {
         "count": int(len(node_df)),
@@ -514,6 +520,7 @@ def build_report_context(
         "top_nodes": top_nodes,
         "bottom_nodes": bottom_nodes,
         "images": images,
+        "year": data_year,
     }
     return context
 
@@ -548,7 +555,7 @@ def render_report_pdf(context: Dict[str, Any]) -> bytes:
     dataset = context["dataset"]
     node_stats = context["node_stats"]
     add_paragraph(
-        f"Filtered rows: {dataset['rows']} &nbsp;&nbsp; Sources: {dataset['sources']} &nbsp;&nbsp; Area types: {dataset['area_types']} "
+        f"Year: {dataset['year']} &nbsp;&nbsp; Rows: {dataset['rows']} &nbsp;&nbsp; Sources: {dataset['sources']} &nbsp;&nbsp; Area types: {dataset['area_types']} "
         f"&nbsp;&nbsp; Nodes: {node_stats['count']} &nbsp;&nbsp; Avg node size: {node_stats['avg_size']:.1f}"
     )
     if context["node_summary"]:
@@ -709,7 +716,11 @@ def main() -> None:
         "Interactively explore the Health Index scores (England, 2021). "
         "Filter sources/area types, choose feature sets, and generate Ball Mapper graphs on the fly."
     )
-    df = load_dataset()
+    if not YEAR_OPTIONS:
+        st.error("No health index datasets found.")
+        return
+    selected_year = st.sidebar.selectbox("Data year", YEAR_OPTIONS, index=0, key="data_year")
+    df = load_dataset(selected_year)
     filtered_df, selected_sources, selected_area_types = sidebar_filters(df)
     if "bm_feature_cols" not in st.session_state:
         st.session_state["bm_feature_cols"] = DEFAULT_FEATURES
@@ -721,7 +732,7 @@ def main() -> None:
     if filtered_df.empty:
         st.warning("No data after filtering. Adjust sidebar filters.")
         return
-    render_dataset_summary(filtered_df)
+    render_dataset_summary(filtered_df, selected_year)
 
     st.header("Ball Mapper Playground")
     range_col, toggle_col = st.columns([0.8, 0.2])
@@ -868,6 +879,7 @@ def main() -> None:
             mime="application/json",
         )
         report_context = build_report_context(
+            data_year=selected_year,
             preset_name=preset_name,
             preset_notes=preset_cfg.get("notes", ""),
             epsilon=epsilon,

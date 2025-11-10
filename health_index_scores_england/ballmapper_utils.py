@@ -8,7 +8,8 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
-DATA_PATH = Path(__file__).resolve().parent / "health_index_combined_2021.csv"
+DATA_DIR = Path(__file__).resolve().parent
+DATA_PATH = DATA_DIR / "health_index_combined_2021.csv"
 DEFAULT_FEATURES = [
     "Healthy People Domain",
     "Healthy Lives Domain",
@@ -26,8 +27,25 @@ class BallMapperNode:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
-def load_health_index_dataset(path: Path | None = None) -> pd.DataFrame:
-    dataset_path = path or DATA_PATH
+def available_years() -> Dict[str, Path]:
+    files = {}
+    for csv_path in DATA_DIR.glob("health_index_combined_*.csv"):
+        suffix = csv_path.stem.split("_")[-1]
+        files[suffix] = csv_path
+    return dict(sorted(files.items(), reverse=True))
+
+
+def resolve_dataset_path(year: str | None = None) -> Path:
+    if year is None:
+        return DATA_PATH
+    files = available_years()
+    if year not in files:
+        raise FileNotFoundError(f"No dataset found for year {year}.")
+    return files[year]
+
+
+def load_health_index_dataset(path: Path | None = None, year: str | None = None) -> pd.DataFrame:
+    dataset_path = path or resolve_dataset_path(year)
     return pd.read_csv(dataset_path)
 
 
