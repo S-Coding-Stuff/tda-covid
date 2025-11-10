@@ -2,19 +2,22 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 import networkx as nx
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
+from ripser import ripser
 
 import sys
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
+sys.path.append(str(Path(__file__).resolve().parents[1] / ".tda_lib"))
 
 import health_index_scores_england.ballmapper_utils as bm
 
@@ -40,7 +43,7 @@ PRESET_CONFIGS = {
         "color": "Healthy People Domain",
         "notes": "Behavioural risk clusters vs overall health.",
     },
-    "⚖️ Lifestyle Risk & Mental Wellbeing": {
+    "🧠 Lifestyle Risk & Mental Wellbeing": {
         "features": [
             "Overweight and obesity in adults [L3]",
             "Alcohol misuse [L1]",
@@ -68,6 +71,28 @@ PRESET_CONFIGS = {
         "color": "Life expectancy [Pe3]",
         "notes": "Preventive engagement vs longevity.",
     },
+    "🧬 Chronic Disease Burden": {
+        "features": [
+            "Cancer [Pe5]",
+            "Cardiovascular conditions [Pe5]",
+            "Diabetes [Pe5]",
+            "Respiratory conditions [Pe5]",
+            "Dementia [Pe5]",
+        ],
+        "color": "Healthy People Domain",
+        "notes": "Overlapping chronic disease patterns and their effect on overall health.",
+    },
+    "🌆 Urban Environment & Air Quality": {
+        "features": [
+            "Air pollution [Pl5]",
+            "Noise complaints [Pl5]",
+            "Household overcrowding [Pl5]",
+            "Access to green space [Pl]",
+            "Road safety [Pl5]",
+        ],
+        "color": "Healthy Places Domain",
+        "notes": "Urban environmental stressors vs metropolitan/rural health environments.",
+    },
     "🔄 Cross-domain summary": {
         "features": [
             "Healthy People Domain",
@@ -76,6 +101,23 @@ PRESET_CONFIGS = {
         ],
         "color": "Overweight and obesity in adults [L3]",
         "notes": "Macro-level topology of national health balance.",
+    },
+    "⏳ Social Gradient of Longevity": {
+        "features": [
+            "Child poverty [Pl4]",
+            "Unemployment [Pl4]",
+            "Job-related training [Pl4]",
+            "Physical activity [L1]",
+            "Healthy eating [L1]",
+            "Smoking [L1]",
+            "Alcohol misuse [L1]",
+            "Cancer screening attendance [L4]",
+            "Child vaccination coverage [L4]",
+            "Access to green space [Pl]",
+            "Air pollution [Pl5]",
+        ],
+        "color": "Life expectancy [Pe3]",
+        "notes": "Socioeconomic–behavioural–environmental gradient vs life expectancy.",
     },
 }
 
@@ -90,7 +132,8 @@ def sidebar_filters(df: pd.DataFrame) -> pd.DataFrame:
     source_options = sorted(df["Source"].unique())
     selected_sources = st.sidebar.multiselect("Source", source_options, default=source_options)
     area_types = sorted(df["Area Type"].unique())
-    selected_area_types = st.sidebar.multiselect("Area Type", area_types, default=area_types)
+    default_area_types = [atype for atype in area_types if atype.lower() != "country"]
+    selected_area_types = st.sidebar.multiselect("Area Type", area_types, default=default_area_types)
     filtered = df[df["Source"].isin(selected_sources) & df["Area Type"].isin(selected_area_types)].copy()
     return filtered
 
@@ -108,7 +151,8 @@ def choose_features(df: pd.DataFrame) -> tuple[List[str], str]:
         "Ball Mapper features", numeric_cols, default=default_features, key="feature_cols"
     )
     norm_method = st.sidebar.selectbox("Normalization method", ["minmax", "zscore"], index=0)
-    return feature_cols, norm_method
+    st.sidebar.caption("Tip: When selecting many features, try **z-score** normalisation and a larger ε range to maintain connectivity.")
+    return feature_cols or default_features, norm_method
 
 
 def render_dataset_summary(df: pd.DataFrame) -> None:
@@ -195,12 +239,48 @@ def build_plotly_graph(G: nx.Graph, color_metric: str, size_metric: str, feature
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         height=720,
-        margin=dict(l=20, r=20, t=60, b=20),
+        margin=dict(l=20, r=20, t=60, b=110),
         plot_bgcolor="rgba(12,12,12,1)",
         paper_bgcolor="rgba(12,12,12,1)",
         font=dict(color="#f0f0f0"),
     )
     return fig
+
+
+def compute_barcodes(points: np.ndarray, maxdim: int = 1) -> Dict[str, np.ndarray]:
+    result = ripser(points, maxdim=maxdim)
+    diagrams = result["dgms"]
+    return {"H0": diagrams[0], "H1": diagrams[1] if len(diagrams) > 1 else np.empty((0, 2))}
+
+
+def render_barcodes(barcodes: Dict[str, np.ndarray]) -> None:
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, subplot_titles=("H0 barcode", "H1 barcode"))
+    colors = {"H0": "skyblue", "H1": "salmon"}
+    for row, dim in enumerate(["H0", "H1"], start=1):
+        diagram = barcodes.get(dim, np.empty((0, 2)))
+        for idx, (birth, death) in enumerate(diagram):
+            death = death if np.isfinite(death) else birth + 1.0
+            fig.add_trace(
+                go.Scatter(
+                    x=[birth, death],
+                    y=[idx, idx],
+                    mode="lines",
+                    line=dict(color=colors[dim], width=3),
+                    showlegend=False,
+                ),
+                row=row,
+                col=1,
+            )
+    fig.update_yaxes(title_text="Intervals", showticklabels=False, row=1, col=1)
+    fig.update_xaxes(title_text="Filtration value")
+    fig.update_layout(
+        height=400,
+        margin=dict(l=20, r=20, t=40, b=20),
+        plot_bgcolor="rgba(12,12,12,1)",
+        paper_bgcolor="rgba(12,12,12,1)",
+        font=dict(color="#f0f0f0"),
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def summarize_nodes(node_df: pd.DataFrame, color_metric: str) -> str:
@@ -225,14 +305,35 @@ def main() -> None:
     )
     df = load_dataset()
     filtered_df = sidebar_filters(df)
+    if "bm_feature_cols" not in st.session_state:
+        st.session_state["bm_feature_cols"] = DEFAULT_FEATURES
+    if "bm_norm_method" not in st.session_state:
+        st.session_state["bm_norm_method"] = "minmax"
     feature_cols, norm_method = choose_features(filtered_df)
+    st.session_state["bm_feature_cols"] = feature_cols or DEFAULT_FEATURES
+    st.session_state["bm_norm_method"] = norm_method
     if filtered_df.empty:
         st.warning("No data after filtering. Adjust sidebar filters.")
         return
     render_dataset_summary(filtered_df)
 
     st.header("Ball Mapper Playground")
-    epsilon = st.slider("Ball radius ε", 0.05, 0.5, value=0.2, step=0.01)
+    range_col, toggle_col = st.columns([0.8, 0.2])
+    with toggle_col:
+        wide_range = st.checkbox("ε up to 10.0", value=False, key="epsilon_wide")
+    max_eps = 10.0 if wide_range else 0.5
+    if "epsilon_value" not in st.session_state:
+        st.session_state["epsilon_value"] = 0.2
+    st.session_state["epsilon_value"] = min(st.session_state["epsilon_value"], max_eps)
+    with range_col:
+        epsilon = st.slider(
+            "Ball radius ε",
+            min_value=0.05,
+            max_value=max_eps,
+            value=st.session_state["epsilon_value"],
+            step=0.01,
+        )
+    st.session_state["epsilon_value"] = epsilon
     numeric_cols = [
         col
         for col in filtered_df.columns
@@ -250,6 +351,7 @@ def main() -> None:
         preset_features = [f for f in preset_cfg["features"] if f in numeric_cols]
         if preset_features:
             feature_cols = preset_features
+            st.session_state["bm_feature_cols"] = feature_cols
         if preset_cfg["color"] in numeric_cols:
             color_metric = preset_cfg["color"]
         st.caption(f"{preset_cfg['notes']}  \nFeatures: {', '.join(feature_cols)} | Colour: {color_metric}")
@@ -261,8 +363,11 @@ def main() -> None:
     size_options = ["size"] + feature_cols
     size_metric = st.selectbox("Node size metric (display only)", size_options, index=0)
 
-    if st.button("Generate Ball Mapper graph", type="primary"):
-        normalized, used_features = bm.normalize_features(filtered_df, feature_cols, norm_method)
+    should_generate = st.button("Generate Ball Mapper graph", type="primary")
+    if should_generate:
+        normalized, used_features = bm.normalize_features(
+            filtered_df, st.session_state["bm_feature_cols"], st.session_state["bm_norm_method"]
+        )
         labels = bm.compose_labels(filtered_df)
         centers, cover = bm.build_cover(normalized, epsilon)
         if not centers:
@@ -274,9 +379,43 @@ def main() -> None:
             st.warning(f"{color_metric} is not available as a numeric metric.")
             return
         node_df = bm.nodes_to_dataframe(nodes, labels)
-        fig = build_plotly_graph(G, color_metric, size_metric, feature_cols)
+        fig = build_plotly_graph(G, color_metric, size_metric, st.session_state["bm_feature_cols"])
+        caption_text = f"Features: {', '.join(st.session_state['bm_feature_cols'])} | Colour: {color_metric} | ε = {epsilon}"
+        fig.add_annotation(
+            text=caption_text,
+            xref="paper",
+            yref="paper",
+            x=0,
+            y=-0.08,
+            showarrow=False,
+            font=dict(color="#f0f0f0", size=12),
+        )
         st.plotly_chart(fig, use_container_width=True)
+        st.caption(caption_text)
+        fig_html = fig.to_html(include_plotlyjs="cdn")
+        png_bytes = fig.to_image(format="png", scale=2)
+        plot_col1, plot_col2 = st.columns(2)
+        with plot_col1:
+            st.download_button(
+                "Download plot (HTML)",
+                data=fig_html,
+                file_name="health_index_ballmapper_plot.html",
+                mime="text/html",
+                use_container_width=True,
+            )
+        with plot_col2:
+            st.download_button(
+                "Download plot (PNG)",
+                data=png_bytes,
+                file_name="health_index_ballmapper_plot.png",
+                mime="image/png",
+                use_container_width=True,
+            )
         st.info(summarize_nodes(node_df, color_metric))
+        st.markdown("#### Persistence barcodes")
+        landmark_points = normalized[centers] if centers else np.empty((0, normalized.shape[1]))
+        barcodes = compute_barcodes(landmark_points)
+        render_barcodes(barcodes)
         st.subheader("Node summary")
         st.dataframe(node_df)
         st.download_button(

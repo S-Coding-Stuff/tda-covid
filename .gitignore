@@ -13,6 +13,8 @@ dist/
 venv/
 env/
 ENV/
+.tda_lib/
+.openpyxl_lib/
 
 # IDE and editor settings
 .idea/

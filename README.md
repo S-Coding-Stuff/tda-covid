@@ -69,7 +69,12 @@ Tabs include:
 ```bash
 streamlit run health_index_scores_england/streamlit_app.py
 ```
-Explore the `health_index_combined_2021.csv` dataset with fully configurable Ball Mapper controls (area filters, feature selection, colouring by any metric, downloadable node summaries).
+Explore the `health_index_combined_2021.csv` dataset with fully configurable Ball Mapper controls:
+- Filter by source (England / Regions / IMD Quintiles) and area type.
+- Pick any combination of Health Index metrics and normalisation scheme (min-max or z-score).
+- Use preset themes (mental health, lifestyle risk, chronic disease, preventive health, urban environment, etc.).
+- Adjust ε with ±10% buttons; plots regenerate automatically.
+- Download filtered data, node summaries, and JSON payloads directly from the UI.
 
 ---
 
