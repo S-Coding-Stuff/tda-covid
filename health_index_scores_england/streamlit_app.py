@@ -80,6 +80,11 @@ MAP_HOVER_FIELDS = [
     "Life expectancy [Pe3]",
     "Mental health [Pe]",
 ]
+MAP_PLOT_CONFIG = {
+    "displaylogo": False,
+    "scrollZoom": True,
+    "modeBarButtonsToAdd": ["zoom2d", "zoomIn2d", "zoomOut2d", "resetScale2d"],
+}
 PRESET_CONFIGS = {
     "Custom": {
         "features": DEFAULT_FEATURES,
@@ -418,7 +423,7 @@ def render_geo_overlay(
         legend_title_text="",
         height=720,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, config=MAP_PLOT_CONFIG)
     return fig
 
 
