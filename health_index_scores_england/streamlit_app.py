@@ -489,6 +489,14 @@ def render_barcodes(barcodes: Dict[str, np.ndarray]) -> go.Figure | None:
     return fig
 
 
+def summarize_betti_numbers(barcodes: Dict[str, np.ndarray]) -> Dict[str, int]:
+    betti: Dict[str, int] = {}
+    for dim, diagram in barcodes.items():
+        dim_label = dim[-1] if dim.startswith("H") else dim
+        betti[f"β{dim_label}"] = int(len(diagram))
+    return betti
+
+
 def figure_to_png_bytes(fig: Optional[go.Figure], scale: int = 3) -> Optional[bytes]:
     if fig is None:
         return None
@@ -911,6 +919,14 @@ def main() -> None:
         landmark_points = normalized[centers] if centers else np.empty((0, normalized.shape[1]))
         barcodes = compute_barcodes(landmark_points)
         barcode_fig = render_barcodes(barcodes)
+        betti_numbers = summarize_betti_numbers(barcodes)
+        with st.expander("Betti numbers"):
+            if betti_numbers:
+                cols = st.columns(len(betti_numbers))
+                for idx, (label, value) in enumerate(betti_numbers.items()):
+                    cols[idx].metric(label, value)
+            else:
+                st.write("No Betti numbers available.")
         st.markdown("#### Geographic overlay (local authority view)")
         map_fig = None
         try:
