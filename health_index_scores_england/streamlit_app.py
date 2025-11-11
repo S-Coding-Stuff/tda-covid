@@ -316,13 +316,14 @@ def render_dataset_summary(df: pd.DataFrame, year: str) -> None:
     c2.metric("Sources", df["Source"].nunique())
     c3.metric("Area types", df["Area Type"].nunique())
     c4.metric("Year", year)
-    st.dataframe(df)
-    st.download_button(
-        "Download filtered CSV",
-        data=df.to_csv(index=False),
-        file_name="health_index_filtered.csv",
-        mime="text/csv",
-    )
+    with st.expander("Preview filtered dataset", expanded=False):
+        st.dataframe(df)
+        st.download_button(
+            "Download filtered CSV",
+            data=df.to_csv(index=False),
+            file_name="health_index_filtered.csv",
+            mime="text/csv",
+        )
 
 
 def build_area_assignment_df(
@@ -344,7 +345,7 @@ def build_area_assignment_df(
                 "Area Code": area_code.strip(),
                 "Area Name": row.get("Area Name", ""),
                 "Area Type": row.get("Area Type", ""),
-                "ball_id": node.index,
+                "Node": node.index,
                 "ball_label": ball_label,
             }
             for col in metric_columns:
@@ -392,8 +393,8 @@ def render_geo_overlay(
     hover_fields.extend(col for col in MAP_HOVER_FIELDS if col in map_df.columns)
     hover_fields = list(dict.fromkeys(hover_fields))
     hover_data = {col: True for col in hover_fields}
-    hover_data["ball_id"] = True
-    hover_data["ball_label"] = True
+    hover_data["Node"] = True
+    hover_data["ball_label"] = False
     color_min = float(color_values.min())
     color_max = float(color_values.max())
     fig = px.choropleth_mapbox(
@@ -641,6 +642,7 @@ def build_plotly_graph(G: nx.Graph, color_metric: str, size_metric: str, feature
     hovertext = []
     for n in G.nodes:
         base_lines = [
+            f"Node {n}",
             f"Label: {G.nodes[n]['label']}",
             f"Area type: {G.nodes[n].get('area_type', '—')}",
             f"Source: {G.nodes[n].get('source', '—')}",
@@ -711,10 +713,12 @@ def summarize_nodes(node_df: pd.DataFrame, color_metric: str) -> str:
 
 def main() -> None:
     st.set_page_config(page_title="Health Index Ball Mapper", layout="wide")
-    st.title("Health Index Ball Mapper Explorer (2021)")
+    st.title("Health Index Ball Mapper · England LTLA (2015–2021)")
     st.markdown(
-        "Interactively explore the Health Index scores (England, 2021). "
-        "Filter sources/area types, choose feature sets, and generate Ball Mapper graphs on the fly."
+        "Interactively explore LTLA-level Health Index scores across 2015–2021. "
+        "Lock presets, auto-tune ε, inspect Ball Mapper topology, geographic overlays, persistence barcodes, "
+        "and export PDF summaries for any selected year. Data source: [ONS Health Index scores for England]"
+        "(https://www.ons.gov.uk/peoplepopulationandcommunity/healthandsocialcare/healthandwellbeing/datasets/healthindexscoresengland)."
     )
     if not YEAR_OPTIONS:
         st.error("No health index datasets found.")
