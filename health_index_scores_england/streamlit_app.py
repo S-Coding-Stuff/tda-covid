@@ -286,18 +286,35 @@ def load_geojson(path: str | None = None) -> Tuple[Dict[str, Any], List[str]]:
     return data, codes
 
 
-def sidebar_filters(df: pd.DataFrame) -> tuple[pd.DataFrame, List[str], List[str]]:
+def sidebar_filters(
+    df: pd.DataFrame,
+) -> tuple[pd.DataFrame, List[str], List[str], bool]:
     st.sidebar.markdown("### Filters")
     source_options = sorted(df["Source"].unique())
-    selected_sources = st.sidebar.multiselect("Source", source_options, default=source_options)
+    source_state_key = "filters_sources"
+    stored_sources = st.session_state.get(source_state_key, source_options)
+    default_sources = [s for s in stored_sources if s in source_options] or source_options
+    selected_sources = st.sidebar.multiselect("Source", source_options, default=default_sources)
+    if not selected_sources:
+        selected_sources = source_options
+    sources_changed = set(selected_sources) != set(stored_sources)
+    st.session_state[source_state_key] = selected_sources
     area_types = sorted(df["Area Type"].unique())
     default_area_types = [atype for atype in area_types if atype.lower() != "country"]
-    selected_area_types = st.sidebar.multiselect("Area Type", area_types, default=default_area_types)
+    area_state_key = "filters_area_types"
+    stored_area_types = st.session_state.get(area_state_key, default_area_types)
+    default_selected_area = [a for a in stored_area_types if a in area_types] or default_area_types or area_types
+    selected_area_types = st.sidebar.multiselect("Area Type", area_types, default=default_selected_area)
+    if not selected_area_types:
+        selected_area_types = default_selected_area
+    areas_changed = set(selected_area_types) != set(stored_area_types)
+    st.session_state[area_state_key] = selected_area_types
     filtered = df[df["Source"].isin(selected_sources) & df["Area Type"].isin(selected_area_types)].copy()
-    return filtered, selected_sources, selected_area_types
+    filters_changed = sources_changed or areas_changed
+    return filtered, selected_sources, selected_area_types, filters_changed
 
 
-def choose_features(df: pd.DataFrame) -> tuple[List[str], str]:
+def choose_features(df: pd.DataFrame) -> tuple[List[str], str, bool, bool]:
     st.sidebar.markdown("### Feature Selection")
     numeric_cols = [
         col
@@ -306,12 +323,26 @@ def choose_features(df: pd.DataFrame) -> tuple[List[str], str]:
         and pd.api.types.is_numeric_dtype(df[col])
     ]
     default_features = [f for f in DEFAULT_FEATURES if f in numeric_cols][:4] or numeric_cols[:4]
+    stored_manual_features = st.session_state.get("manual_feature_cols", default_features)
+    default_selection = [f for f in stored_manual_features if f in numeric_cols] or default_features
     feature_cols = st.sidebar.multiselect(
-        "Ball Mapper features", numeric_cols, default=default_features, key="feature_cols"
+        "Ball Mapper features", numeric_cols, default=default_selection
     )
-    norm_method = st.sidebar.selectbox("Normalization method", ["minmax", "zscore"], index=0)
+    if not feature_cols:
+        feature_cols = default_selection
+    manual_features_changed = set(feature_cols) != set(stored_manual_features)
+    st.session_state["manual_feature_cols"] = feature_cols
+    norm_options = ["minmax", "zscore"]
+    stored_norm = st.session_state.get("norm_method_state", norm_options[0])
+    if stored_norm not in norm_options:
+        stored_norm = norm_options[0]
+    norm_method = st.sidebar.selectbox(
+        "Normalization method", norm_options, index=norm_options.index(stored_norm)
+    )
+    norm_changed = norm_method != stored_norm
+    st.session_state["norm_method_state"] = norm_method
     st.sidebar.caption("Tip: When selecting many features, try **z-score** normalisation and a larger ε range to maintain connectivity.")
-    return feature_cols or default_features, norm_method
+    return feature_cols or default_features, norm_method, manual_features_changed, norm_changed
 
 
 def render_dataset_summary(df: pd.DataFrame, year: str) -> None:
@@ -729,14 +760,19 @@ def main() -> None:
         st.error("No health index datasets found.")
         return
     selected_year = st.sidebar.selectbox("Data year", YEAR_OPTIONS, index=0, key="data_year")
+    previous_year = st.session_state.get("selected_year_prev")
+    year_changed = previous_year is not None and previous_year != selected_year
+    st.session_state["selected_year_prev"] = selected_year
+    if "has_generated_plot" not in st.session_state:
+        st.session_state["has_generated_plot"] = False
     df = load_dataset(selected_year)
-    filtered_df, selected_sources, selected_area_types = sidebar_filters(df)
+    filtered_df, selected_sources, selected_area_types, filters_changed = sidebar_filters(df)
     if "bm_feature_cols" not in st.session_state:
         st.session_state["bm_feature_cols"] = DEFAULT_FEATURES
     if "bm_norm_method" not in st.session_state:
         st.session_state["bm_norm_method"] = "minmax"
-    feature_cols, norm_method = choose_features(filtered_df)
-    st.session_state["bm_feature_cols"] = feature_cols or DEFAULT_FEATURES
+    previous_final_features = st.session_state.get("bm_feature_cols", DEFAULT_FEATURES)
+    feature_cols, norm_method, manual_features_changed, norm_changed = choose_features(filtered_df)
     st.session_state["bm_norm_method"] = norm_method
     if filtered_df.empty:
         st.warning("No data after filtering. Adjust sidebar filters.")
@@ -750,15 +786,17 @@ def main() -> None:
     max_eps = 10.0 if wide_range else 0.5
     if "epsilon_value" not in st.session_state:
         st.session_state["epsilon_value"] = 0.2
-    st.session_state["epsilon_value"] = min(st.session_state["epsilon_value"], max_eps)
+    current_epsilon = min(st.session_state["epsilon_value"], max_eps)
     with range_col:
         epsilon = st.slider(
             "Ball radius ε",
             min_value=0.05,
             max_value=max_eps,
-            value=st.session_state["epsilon_value"],
+            value=current_epsilon,
             step=0.01,
         )
+    epsilon = min(max(epsilon, 0.05), max_eps)
+    epsilon_changed = abs(epsilon - st.session_state["epsilon_value"]) > 1e-9
     st.session_state["epsilon_value"] = epsilon
     numeric_cols = [
         col
@@ -771,6 +809,8 @@ def main() -> None:
         return
     default_color = "Healthy People Domain" if "Healthy People Domain" in numeric_cols else numeric_cols[0]
     color_metric = default_color
+    if "color_metric_value" not in st.session_state:
+        st.session_state["color_metric_value"] = default_color
     preset_name = st.selectbox("Preset theme", list(PRESET_CONFIGS.keys()), index=0)
     preset_cfg = PRESET_CONFIGS[preset_name]
     if preset_name != "Custom":
@@ -781,15 +821,35 @@ def main() -> None:
         if preset_cfg["color"] in numeric_cols:
             color_metric = preset_cfg["color"]
         st.caption(f"{preset_cfg['notes']}  \nFeatures: {', '.join(feature_cols)} | Colour: {color_metric}")
+    feature_cols = feature_cols or DEFAULT_FEATURES
+    features_changed = manual_features_changed or (set(feature_cols) != set(previous_final_features))
+    st.session_state["bm_feature_cols"] = feature_cols
+    current_color_value = st.session_state.get("color_metric_value", color_metric)
+    if current_color_value not in numeric_cols:
+        current_color_value = color_metric
     color_metric = st.selectbox(
         "Colour metric",
         numeric_cols,
-        index=numeric_cols.index(color_metric) if color_metric in numeric_cols else 0,
+        index=numeric_cols.index(current_color_value),
     )
+    st.session_state["color_metric_value"] = color_metric
+    size_state_key = "size_metric_value"
     size_options = ["size"] + feature_cols
-    size_metric = st.selectbox("Node size metric (display only)", size_options, index=0)
+    current_size_value = st.session_state.get(size_state_key, "size")
+    if current_size_value not in size_options:
+        current_size_value = "size"
+    size_metric = st.selectbox(
+        "Node size metric (display only)",
+        size_options,
+        index=size_options.index(current_size_value),
+    )
+    st.session_state[size_state_key] = size_metric
 
-    should_generate = st.button("Generate Ball Mapper graph", type="primary")
+    auto_trigger = (
+        st.session_state.get("has_generated_plot", False)
+        and (year_changed or epsilon_changed or filters_changed or features_changed or norm_changed)
+    )
+    should_generate = st.button("Generate Ball Mapper graph", type="primary") or auto_trigger
     if should_generate:
         normalized, used_features = bm.normalize_features(
             filtered_df, st.session_state["bm_feature_cols"], st.session_state["bm_norm_method"]
@@ -887,6 +947,7 @@ def main() -> None:
             file_name="health_index_ballmapper_nodes.json",
             mime="application/json",
         )
+        st.session_state["has_generated_plot"] = True
         report_context = build_report_context(
             data_year=selected_year,
             preset_name=preset_name,
