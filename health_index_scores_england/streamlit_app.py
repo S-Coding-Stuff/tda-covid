@@ -198,6 +198,66 @@ PRESET_CONFIGS = {
     },
 }
 
+HEATMAP_CATEGORY_BUNDLES = {
+    "Mental health & wellbeing": [
+        "Mental health [Pe]",
+        "Children's social, emotional and mental health [Pe2]",
+        "Mental health conditions [Pe2]",
+        "Self-harm [Pe2]",
+        "Suicides [Pe2]",
+        "Personal well-being [Pe]",
+        "Feelings of anxiety [Pe4]",
+        "Happiness [Pe4]",
+        "Life satisfaction [Pe4]",
+    ],
+    "Physical health burden": [
+        "Physical health conditions [Pe]",
+        "Cancer [Pe5]",
+        "Cardiovascular conditions [Pe5]",
+        "Diabetes [Pe5]",
+        "Respiratory conditions [Pe5]",
+        "Musculoskeletal conditions [Pe5]",
+        "Kidney and liver disease [Pe5]",
+        "Dementia [Pe5]",
+    ],
+    "Wealth, work & deprivation": [
+        "Child poverty [Pl4]",
+        "Unemployment [Pl4]",
+        "Job-related training [Pl4]",
+        "Workplace safety [Pl4]",
+        "Rough sleeping [Pl5]",
+        "Household overcrowding [Pl5]",
+    ],
+    "Healthy behaviours & risks": [
+        "Smoking [L1]",
+        "Alcohol misuse [L1]",
+        "Drug misuse [L1]",
+        "Healthy eating [L1]",
+        "Physical activity [L1]",
+        "Sedentary behaviour [L1]",
+        "Overweight and obesity in adults [L3]",
+        "Overweight and obesity in children [L3]",
+    ],
+    "Preventive care & access": [
+        "Cancer screening attendance [L4]",
+        "Child vaccination coverage [L4]",
+        "Access to services [Pl]",
+        "Distance to GP services [Pl2]",
+        "Distance to pharmacies [Pl2]",
+        "Distance to sports or leisure facilities [Pl2]",
+        "Internet access [Pl2]",
+        "Patients offered acceptable GP practice appointments [Pl2]",
+    ],
+    "Environment & place": [
+        "Healthy Places Domain",
+        "Access to green space [Pl]",
+        "Private outdoor space [Pl1]",
+        "Air pollution [Pl5]",
+        "Noise complaints [Pl5]",
+        "Road safety [Pl5]",
+    ],
+}
+
 
 YEAR_OPTIONS = sorted(bm.available_years().keys(), reverse=True)
 
@@ -360,6 +420,156 @@ def render_dataset_summary(df: pd.DataFrame, year: str) -> None:
             file_name="health_index_filtered.csv",
             mime="text/csv",
         )
+
+
+def _aggregate_bundle_series(
+    df: pd.DataFrame,
+    columns: List[str],
+    method: str = "mean",
+) -> pd.Series:
+    numeric_subset = df[columns].apply(pd.to_numeric, errors="coerce")
+    if method == "median":
+        return numeric_subset.median(axis=1, skipna=True)
+    return numeric_subset.mean(axis=1, skipna=True)
+
+
+def build_correlation_dataset(
+    df: pd.DataFrame,
+    *,
+    bundles: List[str],
+    metrics: List[str],
+    agg_method: str,
+) -> tuple[pd.DataFrame, Dict[str, List[str]]]:
+    data: Dict[str, pd.Series] = {}
+    missing_columns: Dict[str, List[str]] = {}
+    for bundle in bundles:
+        cols = [col for col in HEATMAP_CATEGORY_BUNDLES.get(bundle, []) if col in df.columns]
+        if not cols:
+            missing_columns[bundle] = HEATMAP_CATEGORY_BUNDLES.get(bundle, [])
+            continue
+        data[bundle] = _aggregate_bundle_series(df, cols, method=agg_method)
+    for metric in metrics:
+        if metric in df.columns:
+            data[metric] = pd.to_numeric(df[metric], errors="coerce")
+    matrix = pd.DataFrame(data)
+    matrix = matrix.dropna(axis=1, how="all")
+    return matrix, missing_columns
+
+
+def render_correlation_explorer(df: pd.DataFrame) -> None:
+    st.header("Correlation explorer")
+    st.caption(
+        "Add or remove indicator bundles to gauge how domains (e.g. mental health vs wealth) co-move. "
+        "Use Spearman when dealing with skewed scores."
+    )
+    numeric_cols = [
+        col
+        for col in df.columns
+        if col not in {"Source", "Year", "Area Code", "Area Name", "Area Type"}
+        and pd.api.types.is_numeric_dtype(df[col])
+    ]
+    if len(numeric_cols) < 2:
+        st.info("Need at least two numeric indicators to compute correlations.")
+        return
+    available_bundles = [
+        bundle
+        for bundle, cols in HEATMAP_CATEGORY_BUNDLES.items()
+        if any(col in numeric_cols for col in cols)
+    ]
+    default_bundles = [
+        bundle
+        for bundle in ["Mental health & wellbeing", "Physical health burden", "Wealth, work & deprivation"]
+        if bundle in available_bundles
+    ]
+    with st.expander("Correlation heatmap", expanded=True):
+        selected_bundles = st.multiselect(
+            "Category bundles",
+            options=available_bundles,
+            default=default_bundles,
+            key="corr_bundle_options",
+        )
+        manual_default = [f for f in DEFAULT_FEATURES if f in numeric_cols]
+        selected_metrics = st.multiselect(
+            "Individual indicators",
+            options=sorted(numeric_cols),
+            default=manual_default,
+            key="corr_manual_metrics",
+        )
+        agg_method = st.selectbox(
+            "Bundle aggregation",
+            options=["mean", "median"],
+            format_func=lambda x: "Median" if x == "median" else "Mean",
+            key="corr_agg_method",
+        )
+        corr_method = st.selectbox(
+            "Correlation method",
+            options=["pearson", "spearman"],
+            format_func=lambda x: x.title(),
+            key="corr_method",
+        )
+        if not selected_bundles and not selected_metrics:
+            st.info("Pick at least one bundle or indicator to build the heatmap.")
+            return
+        corr_data, missing = build_correlation_dataset(
+            df,
+            bundles=selected_bundles,
+            metrics=selected_metrics,
+            agg_method=agg_method,
+        )
+        if corr_data.shape[1] < 2:
+            st.info("Need at least two valid series after filtering. Try adding more bundles or indicators.")
+            return
+        corr_matrix = corr_data.corr(method=corr_method).round(3)
+        fig = px.imshow(
+            corr_matrix,
+            text_auto=True,
+            color_continuous_scale="RdBu",
+            zmin=-1,
+            zmax=1,
+            aspect="auto",
+        )
+        fig.update_layout(
+            height=520,
+            margin=dict(l=10, r=10, t=40, b=10),
+            coloraxis_colorbar=dict(title=f"{corr_method.title()} r"),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        min_abs = st.slider(
+            "Highlight pairs with |corr| ≥",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.6,
+            step=0.05,
+            key="corr_threshold",
+        )
+        mask = np.triu(np.ones_like(corr_matrix, dtype=bool), k=1)
+        triangular = corr_matrix.where(mask)
+        corr_pairs = (
+            triangular.stack()
+            .rename("correlation")
+            .reset_index()
+            .rename(columns={"level_0": "feature_a", "level_1": "feature_b"})
+        )
+        if not corr_pairs.empty:
+            corr_pairs["abs_corr"] = corr_pairs["correlation"].abs()
+            highlights = corr_pairs[corr_pairs["abs_corr"] >= min_abs].sort_values("abs_corr", ascending=False)
+            st.markdown("#### Notable relationships")
+            if highlights.empty:
+                st.write("No pairs exceed the selected threshold.")
+            else:
+                st.dataframe(highlights, use_container_width=True)
+            st.download_button(
+                "Download correlation matrix (CSV)",
+                data=corr_matrix.to_csv(),
+                file_name="health_index_correlation_matrix.csv",
+                mime="text/csv",
+            )
+        if missing:
+            missing_text = ", ".join(sorted(missing.keys()))
+            st.caption(
+                f"Bundles skipped (no matching columns in current filter): {missing_text}. "
+                "Switch year/filters if you need them."
+            )
 
 
 def build_area_assignment_df(
@@ -786,6 +996,7 @@ def main() -> None:
         st.warning("No data after filtering. Adjust sidebar filters.")
         return
     render_dataset_summary(filtered_df, selected_year)
+    render_correlation_explorer(filtered_df)
 
     st.header("Ball Mapper Playground")
     range_col, toggle_col = st.columns([0.8, 0.2])
