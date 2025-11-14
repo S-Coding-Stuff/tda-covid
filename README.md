@@ -51,7 +51,7 @@ Key capabilities:
 - **Year range 2015–2021** with LTLA-only filtering (IMD quads still available as Source filters).
 - **Sidebar filters** (Source + Area Type) persist across year changes. Any change auto-regenerates the plots once you’ve generated them once.
 - **Feature selection**: pick arbitrary numeric indicators + choose min–max or z-score normalisation. Preset themes (mental health, chronic disease, etc.) snap in curated feature lists.
-- **Correlation explorer**: mix-and-match indicator bundles (mental health, deprivation, physical health) or specific metrics to instantly render Pearson/Spearman heatmaps and surface the strongest relationships.
+- **Correlation explorer** (sidebar toggle): mix-and-match indicator bundles (mental health, deprivation, physical health) or specific metrics to instantly render Pearson/Spearman heatmaps and surface the strongest relationships without leaving the app.
 - **Auto ε** + manual slider with auto-regenerate when ε changes (no extra clicks needed once a plot exists).
 - **Global colour bounds** reused across years so Ball Mapper + map scales are consistent when toggling years.
 - **Map zoom controls** (scroll-to-zoom, modebar buttons) + hover metadata showing Node IDs and metric values.

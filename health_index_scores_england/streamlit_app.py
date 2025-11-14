@@ -996,7 +996,15 @@ def main() -> None:
         st.warning("No data after filtering. Adjust sidebar filters.")
         return
     render_dataset_summary(filtered_df, selected_year)
-    render_correlation_explorer(filtered_df)
+    analysis_view = st.sidebar.radio(
+        "Analysis view",
+        options=["Ball Mapper", "Correlation explorer"],
+        index=0,
+        key="analysis_view_selector",
+    )
+    if analysis_view == "Correlation explorer":
+        render_correlation_explorer(filtered_df)
+        return
 
     st.header("Ball Mapper Playground")
     range_col, toggle_col = st.columns([0.8, 0.2])
